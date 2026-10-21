@@ -5,7 +5,7 @@
 - **WiFi 断开 → 自动开启 VPN**
 - **WiFi 连接 → 自动关闭 VPN**
 
-支持亮屏、后台、锁屏等所有场景下的自动切换。
+支持亮屏、后台、锁屏等场景下的自动切换；sing-box 的锁屏启动限制见下文。
 
 ## 前置条件
 
@@ -18,9 +18,11 @@
 | FlClash | https://github.com/chen08209/FlClash |
 | Surfboard | https://github.com/getsurfboard/surfboard |
 | ClashMi | https://github.com/KaringX/clashmi |
+| sing-box for Android (SFA) | https://github.com/SagerNet/sing-box |
 
 > 所选客户端必须已完成订阅配置，确保手动启动 VPN 可正常使用。
 > ClashMi 无感切换需要 v1.0.25.1106 或更高版本。
+> sing-box 支持官方 SFA（包名 `io.nekohasekai.sfa`），需先在 SFA 中选好配置、使用 VPN 模式并手动成功连接一次，完成系统 VPN 授权。
 
 **2. 安装并启动 [Shizuku](https://github.com/RikkaApps/Shizuku)** — 用于在锁屏等受限场景下控制 VPN 切换。
 
@@ -44,6 +46,40 @@
 4. 确认所有权限状态为绿色
 5. 点击「开始监听」
 6. 完成！APP 会在后台自动根据 WiFi 状态切换 VPN
+
+## sing-box 使用说明
+
+- 在客户端下拉框中选择「sing-box (SFA)」，再开始监听。
+- SFA 未提供可供外部应用调用的启动接口。本应用通过 Shizuku 调用系统的 sing-box 快捷开关，首次启动会自动把该开关加入快捷设置。**启动时会短暂展开并收起快捷设置面板**，使系统绑定该开关；断开时沿用 `force-stop`，不会删除配置。
+- 启动前检查 SFA 的 VPN 前台服务，避免重复切换把已开启的 VPN 关闭；启动后等待服务出现，失败时通知会提示检查配置、VPN 授权和快捷开关。
+- **安全锁屏时不能无感启动 SFA**：官方快捷开关要求解锁。本应用会显示「等待解锁」，解锁后若 WiFi 仍未连接则重试。锁屏时关闭 VPN 不受影响。
+- 支持官方 SFA，不包含其他基于 sing-box 内核的第三方客户端。
+
+## 构建与 ADB 验证
+
+本地构建需要 JDK 17 和 Android SDK 34，先配置好 `JAVA_HOME`、`ANDROID_HOME`（若同时设置 `ANDROID_SDK_ROOT`，需与 `ANDROID_HOME` 一致）。
+
+```sh
+./gradlew :app:assembleDebug
+adb -s <设备序列号> install -r app/build/outputs/apk/debug/app-debug.apk
+adb -s <设备序列号> shell am start -n com.vpnonoff/.MainActivity
+```
+
+在设备中配置 SFA、授权 Shizuku，选择 sing-box 并开始监听后，可以运行真实设备集成检查：
+
+```sh
+python3 scripts/verify-sing-box.py --serial <设备序列号>
+```
+
+该检查会临时切换 WiFi 两轮、重启 VPN OnOff，验证 SFA 的前台服务和系统 VPN 状态；结束时恢复原 WiFi 开关。设备需保持解锁，并能连接已保存的 WiFi。检查只使用现有 SFA 配置，不创建测试订阅。
+
+定位控制问题可使用：
+
+```sh
+adb -s <设备序列号> logcat -s VPNOnOff
+adb -s <设备序列号> shell dumpsys activity services io.nekohasekai.sfa/.bg.VPNService
+adb -s <设备序列号> shell dumpsys vpn_management
+```
 
 ## 注意事项
 

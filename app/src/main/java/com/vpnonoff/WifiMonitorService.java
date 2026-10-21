@@ -1,12 +1,15 @@
 package com.vpnonoff;
 
+import android.app.KeyguardManager;
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.app.Service;
+import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.net.ConnectivityManager;
 import android.net.Network;
 import android.net.NetworkCapabilities;
@@ -19,6 +22,8 @@ import android.os.IBinder;
 import android.util.Log;
 
 import java.lang.reflect.Method;
+
+import androidx.core.content.ContextCompat;
 
 import rikka.shizuku.Shizuku;
 
@@ -39,6 +44,11 @@ public class WifiMonitorService extends Service {
     private static final int CLIENT_FLCLASH = 2;
     private static final int CLIENT_SURFBOARD = 3;
     private static final int CLIENT_CLASH_MI = 4;
+    private static final int CLIENT_SING_BOX = 5;
+
+    private static final String SING_BOX_PACKAGE = "io.nekohasekai.sfa";
+    private static final String SING_BOX_TILE = SING_BOX_PACKAGE + "/.bg.TileService";
+    private static final String SING_BOX_VPN = SING_BOX_PACKAGE + "/.bg.VPNService";
 
     // Bettbox
     private static final String BETTBOX_PACKAGE = "com.appshub.bettbox";
@@ -68,6 +78,7 @@ public class WifiMonitorService extends Service {
     private String lastDesiredAction = null;
     private static final long DEBOUNCE_MS = 500;
     private Runnable pendingAction;
+    private BroadcastReceiver unlockReceiver;
 
     @Override
     public void onCreate() {
@@ -83,6 +94,23 @@ public class WifiMonitorService extends Service {
         createNotificationChannel();
         startForeground(NOTIFICATION_ID, buildNotification("监听中..."));
         registerWifiCallback();
+        if (selectedClient == CLIENT_SING_BOX) {
+            // SFA's official tile requires an unlocked device. Retry a pending
+            // start after unlock without changing the WiFi policy.
+            unlockReceiver = new BroadcastReceiver() {
+                @Override
+                public void onReceive(Context context, Intent intent) {
+                    if (Intent.ACTION_USER_PRESENT.equals(intent.getAction())) {
+                        handler.post(() -> scheduleAction());
+                    }
+                }
+            };
+            ContextCompat.registerReceiver(this, unlockReceiver,
+                    new IntentFilter(Intent.ACTION_USER_PRESENT),
+                    // USER_PRESENT is protected against app spoofing, but is
+                    // sent by SystemUI's UID rather than the system UID.
+                    ContextCompat.RECEIVER_EXPORTED);
+        }
     }
 
     @Override
@@ -98,6 +126,9 @@ public class WifiMonitorService extends Service {
     @Override
     public void onDestroy() {
         super.onDestroy();
+        if (unlockReceiver != null) {
+            unregisterReceiver(unlockReceiver);
+        }
         if (connectivityManager != null && networkCallback != null) {
             connectivityManager.unregisterNetworkCallback(networkCallback);
         }
@@ -133,7 +164,8 @@ public class WifiMonitorService extends Service {
             @Override
             public void onAvailable(Network network) {
                 NetworkCapabilities caps = connectivityManager.getNetworkCapabilities(network);
-                if (caps != null && caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) {
+                if (caps != null && caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)
+                        && !caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) {
                     wifiNetworks.add(network);
                     scheduleAction();
                 }
@@ -141,7 +173,8 @@ public class WifiMonitorService extends Service {
 
             @Override
             public void onCapabilitiesChanged(Network network, NetworkCapabilities caps) {
-                if (caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) {
+                if (caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)
+                        && !caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) {
                     wifiNetworks.add(network);
                 } else {
                     wifiNetworks.remove(network);
@@ -166,14 +199,17 @@ public class WifiMonitorService extends Service {
             Network[] networks = connectivityManager.getAllNetworks();
             for (Network network : networks) {
                 NetworkCapabilities caps = connectivityManager.getNetworkCapabilities(network);
-                if (caps != null && caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) {
+                // Match the callback's non-VPN WiFi networks. A VPN can also
+                // advertise WIFI, but never receives onLost on this callback.
+                if (caps != null && caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)
+                        && !caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) {
                     wifiNetworks.add(network);
                 }
             }
             Log.i(TAG, "Initial WiFi state: " + (wifiNetworks.isEmpty() ? "disconnected" : "connected"));
-            if (wifiNetworks.isEmpty()) {
-                // No WiFi — start VPN immediately
-                executeAction(ACTION_START);
+            if (wifiNetworks.isEmpty() || selectedClient == CLIENT_SING_BOX) {
+                // SFA must also reconcile a VPN left running during initial setup.
+                executeAction(wifiNetworks.isEmpty() ? ACTION_START : ACTION_STOP);
             } else {
                 // WiFi connected — just record state, don't send redundant STOP
                 lastDesiredAction = ACTION_STOP;
@@ -221,6 +257,9 @@ public class WifiMonitorService extends Service {
                 break;
             case CLIENT_CLASH_MI:
                 success = controlClashMiViaShizuku(action);
+                break;
+            case CLIENT_SING_BOX:
+                success = controlSingBoxViaShizuku(action);
                 break;
             default:
                 // CMFA — original logic, calling unmodified method
@@ -332,6 +371,38 @@ public class WifiMonitorService extends Service {
                 + " -a " + automationAction
                 + " -n " + CLASH_MI_PACKAGE + "/" + CLASH_MI_RECEIVER;
         return executeShizukuCommand(cmd);
+    }
+
+    private boolean controlSingBoxViaShizuku(String action) {
+        if (ACTION_STOP.equals(action)) {
+            return executeShizukuCommand("am force-stop --user current " + SING_BOX_PACKAGE);
+        }
+        KeyguardManager keyguard = getSystemService(KeyguardManager.class);
+        if (keyguard.isKeyguardLocked()) {
+            Log.i(TAG, "sing-box start deferred until device unlock");
+            updateNotification("sing-box 等待解锁后开启");
+            return false;
+        }
+        // SFA has no exported start activity/service. Its official QS tile is
+        // callable by Shizuku's shell UID. Check the foreground VPN service
+        // first: the tile toggles, so clicking an already running VPN would stop it.
+        String running = "dumpsys activity services " + SING_BOX_VPN
+                + " | grep -q 'isForeground=true'";
+        String cmd = "pm path " + SING_BOX_PACKAGE + " >/dev/null || exit 1; "
+                + "if " + running + "; then exit 0; fi; "
+                + "cmd statusbar add-tile " + SING_BOX_TILE + " || exit 1; "
+                // SFA's tile is not ACTIVE_TILE: SystemUI only binds it while
+                // quick settings is expanded. Always collapse again on exit.
+                + "trap 'cmd statusbar collapse' EXIT; "
+                + "cmd statusbar expand-settings || exit 1; "
+                + "cmd statusbar click-tile " + SING_BOX_TILE + " || exit 1; "
+                + "for attempt in 1 2 3 4 5 6 7 8 9 10; do "
+                + "sleep 0.5; if " + running + "; then exit 0; fi; done; exit 1";
+        boolean success = executeShizukuCommand(cmd);
+        if (!success) {
+            updateNotification("sing-box 未启动，请检查配置、VPN 授权和快捷开关");
+        }
+        return success;
     }
 
     private boolean executeShizukuCommand(String cmd) {

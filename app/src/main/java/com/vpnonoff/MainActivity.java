@@ -86,7 +86,13 @@ public class MainActivity extends AppCompatActivity {
         clientSpinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
             @Override
             public void onItemSelected(AdapterView<?> parent, android.view.View view, int position, long id) {
-                SharedPreferences.Editor editor = getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit();
+                SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+                // Spinner also reports its restored selection on startup. Only
+                // restart for a real change, avoiding concurrent control commands.
+                if (prefs.getInt(KEY_SELECTED_CLIENT, 0) == position) {
+                    return;
+                }
+                SharedPreferences.Editor editor = prefs.edit();
                 editor.putInt(KEY_SELECTED_CLIENT, position);
                 editor.apply();
 
@@ -292,7 +298,8 @@ public class MainActivity extends AppCompatActivity {
         boolean wifiConnected = false;
         for (Network network : cm.getAllNetworks()) {
             NetworkCapabilities caps = cm.getNetworkCapabilities(network);
-            if (caps != null && caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) {
+            if (caps != null && caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)
+                    && !caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) {
                 wifiConnected = true;
                 break;
             }
