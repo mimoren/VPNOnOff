@@ -6,13 +6,19 @@ Uses the real SFA app and Shizuku; never creates or changes VPN profiles.
 """
 
 import argparse
+import re
 import subprocess
 import time
 import xml.etree.ElementTree as ET
 
 parser = argparse.ArgumentParser(description=__doc__)
-parser.add_argument("--serial", required=True, help="adb device serial")
+parser.add_argument("--serial", required=True, help="USB or emulator adb device serial")
+parser.add_argument("--package", default="com.vpnonoff", help="installed debug application ID")
 args = parser.parse_args()
+if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)+", args.package):
+    parser.error("Invalid Android application ID")
+if ":" in args.serial:
+    parser.error("WiFi cycling disconnects wireless ADB. Use USB or a phone-local check with an independent WiFi restoration guard.")
 adb = ["adb", "-s", args.serial]
 
 
@@ -47,7 +53,7 @@ def wait_for(check, message):
     raise RuntimeError("Timed out: " + message)
 
 
-prefs = ET.fromstring(run("shell", "run-as", "com.vpnonoff", "cat",
+prefs = ET.fromstring(run("shell", "run-as", args.package, "cat",
                           "shared_prefs/vpnonoff_prefs.xml"))
 values = {node.get("name"): node.get("value") for node in prefs}
 if values.get("selected_client") != "5" or values.get("service_enabled") != "true":
@@ -67,7 +73,7 @@ try:
     run("shell", "svc", "wifi", "enable")
     wait_for(lambda: "Wifi is connected to" in run("shell", "cmd", "wifi", "status"),
              "device connected to saved WiFi")
-    run("shell", "am", "force-stop", "com.vpnonoff")
+    run("shell", "am", "force-stop", args.package)
     if not foreground():
         tile = "io.nekohasekai.sfa/.bg.TileService"
         run("shell", "cmd", "statusbar", "add-tile", tile)
@@ -75,17 +81,17 @@ try:
         run("shell", "cmd", "statusbar", "click-tile", tile)
         wait_for(connected, "SFA VPN active over WiFi before monitor startup")
     run("shell", "cmd", "statusbar", "collapse")
-    run("shell", "am", "start", "-W", "-n", "com.vpnonoff/.MainActivity")
+    run("shell", "am", "start", "-W", "-n", f"{args.package}/com.vpnonoff.MainActivity")
     wait_for(lambda: not foreground(), "monitor startup stops an existing VPN on WiFi")
     for cycle in range(1, 3):
         run("shell", "svc", "wifi", "disable")
         wait_for(connected, f"cycle {cycle}: WiFi off starts the real SFA VPN")
         # Process recovery must not toggle an already running SFA off.
         if cycle == 1:
-            run("shell", "am", "force-stop", "com.vpnonoff")
-            run("shell", "am", "start", "-W", "-n", "com.vpnonoff/.MainActivity")
+            run("shell", "am", "force-stop", args.package)
+            run("shell", "am", "start", "-W", "-n", f"{args.package}/com.vpnonoff.MainActivity")
             wait_for(lambda: "isForeground=true" in run(
-                "shell", "dumpsys", "activity", "services", "com.vpnonoff/.WifiMonitorService"
+                "shell", "dumpsys", "activity", "services", f"{args.package}/com.vpnonoff.WifiMonitorService"
             ), "monitor recovers from process restart")
             # Observe beyond the start-command timeout, not just the old VPN state.
             time.sleep(6)
@@ -98,4 +104,4 @@ try:
 finally:
     run("shell", "cmd", "statusbar", "collapse")
     run("shell", "svc", "wifi", "enable" if original_wifi == "1" else "disable")
-    run("shell", "am", "start", "-W", "-n", "com.vpnonoff/.MainActivity")
+    run("shell", "am", "start", "-W", "-n", f"{args.package}/com.vpnonoff.MainActivity")

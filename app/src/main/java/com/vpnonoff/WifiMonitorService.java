@@ -16,6 +16,7 @@ import android.net.NetworkCapabilities;
 import android.net.NetworkRequest;
 import java.util.HashSet;
 import java.util.Set;
+import android.os.Build;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.IBinder;
@@ -383,11 +384,20 @@ public class WifiMonitorService extends Service {
             updateNotification("sing-box 等待解锁后开启");
             return false;
         }
-        // SFA has no exported start activity/service. Its official QS tile is
-        // callable by Shizuku's shell UID. Check the foreground VPN service
-        // first: the tile toggles, so clicking an already running VPN would stop it.
-        String running = "dumpsys activity services " + SING_BOX_VPN
-                + " | grep -q 'isForeground=true'";
+        // The tile toggles, so first check whether SFA owns an active VPN.
+        // New SFA builds can retain a foreground service while disconnected.
+        String running;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            running = "dumpsys vpn_management | awk -v user=\"$(am get-current-user)\" '"
+                    + "/^  [0-9]+:/ { current = ($1 == user \":\") } "
+                    + "/Active package name:/ { sfa = ($NF == \"" + SING_BOX_PACKAGE + "\") } "
+                    + "/Active vpn type:/ && current && sfa && $NF == 1 { active = 1 } "
+                    + "END { exit !active }'";
+        } else {
+            // Older Android releases do not expose the vpn_management service.
+            running = "dumpsys activity services " + SING_BOX_VPN
+                    + " | grep -q 'isForeground=true'";
+        }
         String cmd = "pm path " + SING_BOX_PACKAGE + " >/dev/null || exit 1; "
                 + "if " + running + "; then exit 0; fi; "
                 + "cmd statusbar add-tile " + SING_BOX_TILE + " || exit 1; "
