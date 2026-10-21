@@ -26,6 +26,20 @@
         android:layout_marginBottom="40dp" />
 
     <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="VPN 客户端"
+        android:textSize="14sp"
+        android:textColor="#757575"
+        android:layout_marginBottom="6dp" />
+
+    <Spinner
+        android:id="@+id/clientSpinner"
+        android:layout_width="220dp"
+        android:layout_height="48dp"
+        android:layout_marginBottom="24dp" />
+
+    <TextView
         android:id="@+id/statusText"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
@@ -68,5 +82,13 @@
         android:layout_height="56dp"
         android:text="开始监听"
         android:textSize="16sp" />
+
+    <TextView
+        android:id="@+id/versionText"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="20dp"
+        android:textColor="#9E9E9E"
+        android:textSize="12sp" />
 
 </LinearLayout>

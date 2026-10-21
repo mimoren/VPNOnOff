@@ -15,7 +15,10 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.provider.Settings;
+import android.widget.AdapterView;
+import android.widget.ArrayAdapter;
 import android.widget.Button;
+import android.widget.Spinner;
 import android.widget.TextView;
 
 import androidx.appcompat.app.AppCompatActivity;
@@ -31,7 +34,10 @@ public class MainActivity extends AppCompatActivity {
     private static final int MIUI_OP_BACKGROUND_START_ACTIVITY = 10021;
     private static final int SHIZUKU_REQUEST_CODE = 100;
 
+    private static final String KEY_SELECTED_CLIENT = "selected_client";
+
     private Button toggleButton;
+    private Spinner clientSpinner;
     private TextView statusText;
     private TextView wifiStatusText;
     private TextView bgPopupStatusText;
@@ -57,8 +63,43 @@ public class MainActivity extends AppCompatActivity {
         wifiStatusText = findViewById(R.id.wifiStatusText);
         bgPopupStatusText = findViewById(R.id.bgPopupStatusText);
         shizukuStatusText = findViewById(R.id.shizukuStatusText);
+        TextView versionText = findViewById(R.id.versionText);
+        try {
+            String versionName = getPackageManager()
+                    .getPackageInfo(getPackageName(), 0).versionName;
+            versionText.setText(getString(R.string.version_format, versionName));
+        } catch (PackageManager.NameNotFoundException e) {
+            versionText.setVisibility(android.view.View.GONE);
+        }
 
         Shizuku.addRequestPermissionResultListener(shizukuPermListener);
+
+        clientSpinner = findViewById(R.id.clientSpinner);
+        ArrayAdapter<CharSequence> adapter = ArrayAdapter.createFromResource(this,
+                R.array.vpn_clients, android.R.layout.simple_spinner_item);
+        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        clientSpinner.setAdapter(adapter);
+
+        SharedPreferences prefs2 = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+        clientSpinner.setSelection(prefs2.getInt(KEY_SELECTED_CLIENT, 0));
+
+        clientSpinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+            @Override
+            public void onItemSelected(AdapterView<?> parent, android.view.View view, int position, long id) {
+                SharedPreferences.Editor editor = getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit();
+                editor.putInt(KEY_SELECTED_CLIENT, position);
+                editor.apply();
+
+                // Restart service to pick up new client selection
+                if (serviceRunning) {
+                    stopMonitorService();
+                    startMonitorService();
+                }
+            }
+
+            @Override
+            public void onNothingSelected(AdapterView<?> parent) {}
+        });
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
@@ -105,11 +146,8 @@ public class MainActivity extends AppCompatActivity {
     protected void onResume() {
         super.onResume();
         IntentFilter filter = new IntentFilter("com.vpnonoff.STATUS_CHANGED");
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            registerReceiver(statusReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
-        } else {
-            registerReceiver(statusReceiver, filter);
-        }
+        ContextCompat.registerReceiver(this, statusReceiver, filter,
+                ContextCompat.RECEIVER_NOT_EXPORTED);
         updateWifiStatus();
         updateUI();
         checkPermissions();
@@ -248,11 +286,16 @@ public class MainActivity extends AppCompatActivity {
 
     private void updateWifiStatus() {
         ConnectivityManager cm = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
-        Network network = cm.getActiveNetwork();
+        // Use getAllNetworks instead of getActiveNetwork: when VPN is up,
+        // active network is the VPN tunnel and WiFi would be misreported as disconnected.
+        // This matches WifiMonitorService's detection logic.
         boolean wifiConnected = false;
-        if (network != null) {
+        for (Network network : cm.getAllNetworks()) {
             NetworkCapabilities caps = cm.getNetworkCapabilities(network);
-            wifiConnected = caps != null && caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI);
+            if (caps != null && caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) {
+                wifiConnected = true;
+                break;
+            }
         }
         wifiStatusText.setText(wifiConnected
                 ? "WiFi: 已连接 | VPN: 应关闭"
